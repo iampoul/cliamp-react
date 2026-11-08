@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.iampoul.cliamp-react",
+  "name": "cliamp-react",
+  "version": "1.1.0",
+  "author": "iampoul",
+  "license": "MIT",
+  "description": "cliamp spectrum in the Omarchy bar and behind its background.",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "cliamp-react",
+    "description": "Live spectrum from cliamp",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "centerBegin",
+    "defaults": {},
+    "schema": []
+  }
+}
