@@ -1,10 +1,8 @@
-# cliamp-react — cliamp spectrum -> Hyprland window border gradients + Omarchy bar.
+# cliamp-react — cliamp spectrum -> Hyprland window border gradients.
 # All tiled windows (focused and unfocused) get the moving gradient.
-# The [bar] section drives the optional spectrum widget and bar background.
 #
-# Changes take effect on service restart (borders) or live (bar, watched file):
+# Changes take effect on service restart:
 #   systemctl --user restart cliamp-react
-#   cliamp-react-ctl restart
 
 # cliamp must be running (TUI or --daemon) for its spectrum socket.
 [source]
@@ -20,24 +18,6 @@ sweep = 30               # "bottom" swing degrees; also the "all" mode beat kick
 min_alpha = 200          # darkest the gradient gets (0-255)
 idle_after = 0.9         # seconds of silence before the fade starts
 fade_ms = 500            # fade back to the theme's own border
-
-# Omarchy bar visualizer (shipped as the io.github.iampoul.cliamp-react plugin).
-# `omarchy bar background none` makes our panel the entire bar background, so the
-# spectrum fills the full width behind the clock, tray and workspaces. `glassy`
-# is the softer, frosted alternative.
-[bar]
-enabled = true           # master switch for the bar half
-background = true        # full-width reactive backdrop behind every bar widget
-widget = false           # also show a compact spectrum widget among the bar widgets
-fps = 24                 # widget repaint rate while playing (idle costs nothing)
-background_fps = 12      # backdrop repaint rate (12 is plenty at this size)
-# cols = 96              # optional: override the backdrop column count
-bars = 24                # bands drawn in the compact widget (when widget = true)
-width = 150              # widget width in px
-gain = 1.0               # spectrum amplitude multiplier (0.2-2.0)
-scrim = 0.15             # dark overlay over the spectrum (0-0.8) for text contrast
-fade_ms = 400            # fade in/out on play and pause
-click = "toggle"         # left-click the widget: "toggle" | "none"
 
 [debug]
 log_level = "info"       # debug | info | warn | error
