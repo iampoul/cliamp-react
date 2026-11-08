@@ -1,0 +1,23 @@
+# cliamp-react — cliamp spectrum -> Hyprland window border gradients.
+# All tiled windows (focused and unfocused) get the moving gradient.
+#
+# Changes take effect on service restart:
+#   systemctl --user restart cliamp-react
+
+# cliamp must be running (TUI or --daemon) for its spectrum socket.
+[source]
+fps = 30                 # spectrum polls per second (1-60)
+
+[border]
+enabled = true
+fps = 20                 # border updates per second (every change repaints windows)
+mode = "all"             # "all" = gradient travels around all four edges; "bottom" = glow stays on bottom edges
+spin = 0.20              # "all" mode: extra turns/second at full loudness (slower when quiet)
+angle = 120              # "bottom" mode only: angle that puts the bright stop on the bottom edge
+sweep = 30               # "bottom" swing degrees; also the "all" mode beat kick
+min_alpha = 200          # darkest the gradient gets (0-255)
+idle_after = 0.9         # seconds of silence before the fade starts
+fade_ms = 500            # fade back to the theme's own border
+
+[debug]
+log_level = "info"       # debug | info | warn | error

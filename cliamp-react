@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+"""cliamp-react — drive Hyprland's window border gradients from cliamp's spectrum.
+
+Reads cliamp's V2 IPC (`spectrum.get`) and repaints the active border as a
+gradient whose bright stop sits along the bottom edge of the windows. The
+angle, brightness and colour mix oscillate with the low end and the beat.
+
+No separate visualizer surface: this only changes the borders of real windows.
+When cliamp goes quiet the theme's own border is restored by re-running its
+generated hyprland.lua through Hyprland's Lua evaluator.
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import logging
+import math
+import os
+import signal
+import socket
+import sys
+import time
+import tomllib
+from collections import deque
+from pathlib import Path
+
+HOME = Path.home()
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+THEME_DIR = HOME / ".local/state/omarchy/current/theme"
+THEME_HYPRLAND = THEME_DIR / "hyprland.lua"
+THEME_COLORS = THEME_DIR / "colors.toml"
+DEFAULT_CONFIG_PATH = HOME / ".config/cliamp-react/config.toml"
+
+DEFAULTS = {
+    "source": {"fps": 30},
+    "border": {
+        "enabled": True,
+        "fps": 20,
+        "mode": "all",
+        "angle": 120.0,
+        "sweep": 30.0,
+        "spin": 0.20,
+        "min_alpha": 200,
+        "idle_after": 0.9,
+        "fade_ms": 500,
+    },
+    "debug": {"log_level": "info"},
+}
+
+log = logging.getLogger("cliamp-react")
+
+
+def deep_merge(base: dict, extra: dict) -> dict:
+    out = dict(base)
+    for key, value in (extra or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_config(path: Path) -> dict:
+    try:
+        with path.open("rb") as handle:
+            user = tomllib.load(handle)
+    except FileNotFoundError:
+        log.warning("config %s missing, using defaults", path)
+        user = {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        log.error("config %s unreadable (%s), using defaults", path, exc)
+        user = {}
+    return deep_merge(DEFAULTS, user)
+
+
+# --- colour helpers -------------------------------------------------------
+
+
+def parse_hex(value: str, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+    text = str(value or "").strip().lstrip("#")
+    if len(text) == 8:
+        text = text[:6]
+    if len(text) != 6:
+        return fallback
+    try:
+        return tuple(int(text[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError:
+        return fallback
+
+
+def mix(a, b, t: float):
+    t = max(0.0, min(1.0, t))
+    return tuple(a[i] + (b[i] - a[i]) * t for i in range(3))
+
+
+def rgba(color, alpha: int) -> str:
+    r, g, b = (max(0, min(255, int(round(c)))) for c in color)
+    return f"rgba({r:02x}{g:02x}{b:02x}{max(0, min(255, alpha)):02x})"
+
+
+class Palette:
+    """Accent colours of the active Omarchy theme."""
+
+    def __init__(self) -> None:
+        self.accent = (122, 162, 247)
+        self.hot = (173, 142, 230)
+        self.reload()
+
+    def reload(self) -> None:
+        try:
+            with THEME_COLORS.open("rb") as handle:
+                data = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            log.warning("theme colours unavailable (%s)", exc)
+            return
+        self.accent = parse_hex(data.get("accent", "#7aa2f7"), self.accent)
+        self.hot = parse_hex(
+            data.get("bright_red")
+            or data.get("red")
+            or data.get("magenta")
+            or "#f7768e",
+            self.hot,
+        )
+        log.info("palette: accent=#%02x%02x%02x hot=#%02x%02x%02x",
+                 *self.accent, *self.hot)
+
+
+# --- Hyprland IPC ---------------------------------------------------------
+
+
+class Hyprland:
+    def __init__(self) -> None:
+        self.path: Path | None = None
+
+    def _discover(self) -> Path | None:
+        signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+        if signature:
+            candidate = RUNTIME_DIR / "hypr" / signature / ".socket.sock"
+            if candidate.exists():
+                return candidate
+        sockets = glob.glob(str(RUNTIME_DIR / "hypr" / "*" / ".socket.sock"))
+        return Path(max(sockets, key=os.path.getmtime)) if sockets else None
+
+    def send(self, command: str) -> str | None:
+        if self.path is None or not self.path.exists():
+            self.path = self._discover()
+        if self.path is None:
+            return None
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(1.0)
+        try:
+            sock.connect(str(self.path))
+            sock.sendall(command.encode() + b"\n")
+            reply = sock.recv(256).decode(errors="replace").strip()
+        except OSError as exc:
+            log.debug("hyprland ipc failed: %s", exc)
+            self.path = None
+            return None
+        finally:
+            sock.close()
+        if reply and reply.startswith("error"):
+            log.warning("hyprland eval failed: %s", reply)
+        elif reply not in ("ok", ""):
+            log.debug("hyprland reply: %s", reply)
+        return reply
+
+    def border(self, first, second, angle: float, alpha: int = 255) -> None:
+        # 120deg puts the second (bright) stop on the bottom edge of the frame.
+        # Inactive windows get the same moving gradient at lower intensity, so
+        # every app on the desktop pulses, not only the focused one.
+        inactive_alpha = max(90, int(alpha * 0.7))
+        dim_first = mix(first, (0, 0, 0), 0.32)
+        dim_second = mix(second, (0, 0, 0), 0.12)
+
+        def grad(c1, c2, a1, a2):
+            return (
+                '{ colors = { "'
+                + rgba(c1, a1)
+                + '", "'
+                + rgba(c2, a2)
+                + f'" }}, angle = {angle:.1f} }}'
+            )
+
+        code = (
+            "hl.config({ general = { col = { active_border = "
+            + grad(first, second, alpha, 255)
+            + ", inactive_border = "
+            + grad(dim_first, dim_second, inactive_alpha, min(255, inactive_alpha + 40))
+            + " } } })"
+        )
+        self.send("eval " + code)
+
+    def restore(self) -> None:
+        """Re-apply the active theme's own border (exact, theme-agnostic)."""
+        if not THEME_HYPRLAND.exists():
+            log.warning("no %s; leaving borders as they are", THEME_HYPRLAND)
+            return
+        self.send(f'eval dofile("{THEME_HYPRLAND}")')
+        log.info("restored theme border")
+
+
+# --- cliamp spectrum ------------------------------------------------------
+
+
+def cliamp_socket() -> Path:
+    custom = os.environ.get("CLIAMP_CONFIG_DIR")
+    if custom:
+        return Path(custom).expanduser() / "cliamp.sock"
+    return HOME / ".config/cliamp/cliamp.sock"
+
+
+class Spectrum:
+    def __init__(self, path: Path, fps: int) -> None:
+        self.path = path
+        self.interval = 1.0 / max(1, min(60, int(fps)))
+        self.sock: socket.socket | None = None
+        self.buffer = b""
+        self.next_poll = 0.0
+        self.next_state = 0.0
+        self.serial = 0
+
+    def close(self) -> None:
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        self.sock = None
+        self.buffer = b""
+
+    def _connect(self) -> bool:
+        if not self.path.exists():
+            return False
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        try:
+            sock.connect(str(self.path))
+        except OSError:
+            sock.close()
+            return False
+        self.sock = sock
+        self.buffer = b""
+        log.info("connected to %s", self.path)
+        return True
+
+    def _readline(self) -> bytes | None:
+        assert self.sock is not None
+        while b"\n" not in self.buffer:
+            try:
+                chunk = self.sock.recv(65536)
+            except (socket.timeout, OSError):
+                return None
+            if not chunk:
+                return None
+            self.buffer += chunk
+            if len(self.buffer) > 4 * 1024 * 1024:
+                self.buffer = b""
+                return None
+        line, self.buffer = self.buffer.split(b"\n", 1)
+        return line
+
+    def _request(self, method: str) -> dict | None:
+        self.serial += 1
+        request = {
+            "version": 2,
+            "id": f"cliamp-react-{self.serial}",
+            "method": method,
+        }
+        try:
+            self.sock.sendall(json.dumps(request).encode() + b"\n")
+        except OSError:
+            self.close()
+            return None
+        line = self._readline()
+        if line is None:
+            self.close()
+            return None
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        return message if message.get("ok") else None
+
+    def poll(self, now: float) -> list[float] | None:
+        if now < self.next_poll:
+            return None
+        self.next_poll = now + self.interval
+        if self.sock is None and not self._connect():
+            return None
+        message = self._request("spectrum.get")
+        if message is None:
+            return None
+        result = message.get("result") or {}
+        bands = [float(value) for value in result.get("bands") or []]
+        return bands or None
+
+    def poll_state(self, now: float) -> str | None:
+        """Playback state, sampled twice a second — precise pause detection."""
+        if now < self.next_state:
+            return None
+        self.next_state = now + 0.5
+        if self.sock is None and not self._connect():
+            return None
+        message = self._request("state.get")
+        if message is None:
+            return None
+        snapshot = message.get("snapshot") or message.get("result") or {}
+        return snapshot.get("state")
+
+
+# --- dynamics -------------------------------------------------------------
+
+
+def approach(current: float, target: float, dt: float, tau: float) -> float:
+    if tau <= 0:
+        return target
+    return current + (target - current) * (1.0 - math.exp(-dt / tau))
+
+
+class Dynamics:
+    """Band analysis with an asymmetric envelope and a simple beat detector."""
+
+    def __init__(self, cfg: dict) -> None:
+        self.cfg = cfg
+        self.env = 0.0
+        self.bass = 0.0
+        self.high = 0.0
+        self.pulse = 0.0
+        self.kick = 0.0
+        self.phase = 0.0
+        self.osc_phase = 0.0
+        self.angle = float(cfg["angle"])
+        self.history: deque[float] = deque(maxlen=90)
+        self.last_beat = 0.0
+        self.last_sound = time.monotonic()
+
+    def update(self, bands: list[float], now: float, dt: float) -> None:
+        count = len(bands)
+        third = max(1, count // 3)
+        bass = sum(bands[:third]) / third
+        mid = sum(bands[third : 2 * third]) / max(1, third)
+        high = sum(bands[2 * third :]) / max(1, count - 2 * third)
+        energy = 0.6 * bass + 0.28 * mid + 0.12 * high
+
+        # fast attack, slow release
+        self.env = approach(
+            self.env, energy, dt, 0.035 if energy > self.env else 0.19
+        )
+        self.bass = approach(self.bass, bass, dt, 0.05)
+        self.high = approach(self.high, high, dt, 0.08)
+
+        self.history.append(bass)
+        average = sum(self.history) / len(self.history)
+        beat = (
+            bass > 0.11
+            and bass > average * 1.35
+            and now - self.last_beat > 0.13
+        )
+        if beat:
+            self.last_beat = now
+            self.pulse = min(1.0, 0.35 + bass * 1.4)
+            self.kick = min(1.0, bass * 1.3)
+        self.pulse *= math.exp(-dt / 0.22)
+        self.kick *= math.exp(-dt / 0.28)
+
+        if energy > 0.012:
+            self.last_sound = now
+
+        # Oscillate the gradient around the bottom-anchored angle: faster and
+        # wider when loud, with a kick on the beat. No full rotation, so the
+        # bright stop stays on the lower edge of the windows.
+        self.osc_phase += dt * (0.6 + 1.9 * self.env)
+        # "all"  — the gradient travels around all four edges of every window,
+        #          spinning faster when the music is louder, with a beat kick.
+        # "bottom" — the bright stop stays on the bottom edge and slides along it.
+        if self.cfg.get("mode", "all") == "bottom":
+            self.phase += dt * (0.35 + 1.7 * self.env)
+            self.angle = (
+                self.cfg["angle"]
+                + 0.5 * self.cfg["sweep"] * math.sin(self.phase * math.tau)
+            ) % 360.0
+        else:
+            self.phase += dt * (0.02 + float(self.cfg.get("spin", 0.20)) * self.env)
+            self.angle = (
+                360.0 * self.phase + self.cfg["sweep"] * self.kick
+            ) % 360.0
+
+    def colours(self, palette: Palette, fade: float):
+        """fade 1.0 = live, 0.0 = theme accent."""
+        oscillation = 0.5 + 0.5 * math.sin(self.osc_phase * math.tau)
+        # First stop: the theme accent, gently brightened by the beat.
+        live_first = mix(
+            palette.accent, (255, 255, 255), 0.03 + 0.22 * self.env * oscillation
+        )
+        # Second stop: the hot accent, the one that lands on the bottom edge.
+        live_second = mix(
+            palette.accent,
+            palette.hot,
+            0.35 + 0.60 * min(1.0, self.bass * (0.55 + 0.65 * oscillation)),
+        )
+        first = mix(palette.accent, live_first, fade)
+        second = mix(palette.accent, live_second, fade)
+        alpha = int(
+            self.cfg["min_alpha"]
+            + (255 - self.cfg["min_alpha"])
+            * (0.45 * self.env * oscillation + 0.40 * self.pulse + 0.15 * self.kick)
+        )
+        return first, second, alpha
+
+
+# --- daemon ---------------------------------------------------------------
+
+
+class Daemon:
+    def __init__(self, config_path: Path, debug: bool = False):
+        self.config_path = config_path
+        self.config = load_config(config_path)
+        if debug:
+            self.config["debug"]["log_level"] = "debug"
+        self.palette = Palette()
+        self.hypr = Hyprland()
+        self.spec = Spectrum(cliamp_socket(), self.config["source"]["fps"])
+        self.dyn = Dynamics(self.config["border"])
+
+        self.state = "idle"  # live | fading | idle
+        self.fade_start = 0.0
+        self.fade = 1.0
+        self.border_interval = 1.0 / max(1, min(60, int(self.config["border"]["fps"])))
+        self.next_border = 0.0
+        self.playing = False
+        self.playing_known = False
+        self.running = True
+
+    def stop(self, *_args) -> None:
+        self.running = False
+
+    def reload(self, *_args) -> None:
+        log.info("reloading config and palette")
+        self.config = load_config(self.config_path)
+        self.palette.reload()
+        self.dyn.cfg = self.config["border"]
+        self.dyn.angle = (
+            float(self.config["border"]["angle"])
+            if self.config["border"].get("mode", "all") == "bottom"
+            else 0.0
+        )
+        self.border_interval = 1.0 / max(
+            1, min(60, int(self.config["border"]["fps"]))
+        )
+
+    def run(self) -> int:
+        signal.signal(signal.SIGTERM, self.stop)
+        signal.signal(signal.SIGINT, self.stop)
+        signal.signal(signal.SIGUSR1, self.reload)
+
+        log.info(
+            "up: borders=%s @%.0f fps, source=%.0f fps",
+            "on" if self.config["border"]["enabled"] else "off",
+            self.config["border"]["fps"],
+            self.config["source"]["fps"],
+        )
+        self.hypr.restore()
+        self.dyn.last_sound = time.monotonic() - 10.0
+
+        last = time.monotonic()
+        last_band = last
+        try:
+            while self.running:
+                now = time.monotonic()
+                dt = max(0.0, min(0.25, now - last))
+                last = now
+
+                bands = self.spec.poll(now)
+                if bands:
+                    # dt between spectrum frames, not between loop spins:
+                    # the loop itself ticks every few milliseconds.
+                    dt_band = max(0.0, min(0.25, now - last_band))
+                    last_band = now
+                    self.dyn.update(bands, now, dt_band)
+
+                state = self.spec.poll_state(now)
+                if state is not None:
+                    self.playing = state == "playing"
+                    self.playing_known = True
+                elif not cliamp_socket().exists():
+                    self.playing = False
+
+                self.tick_state(now)
+                if now >= self.next_border:
+                    self.next_border = now + self.border_interval
+                    self.push_border()
+                time.sleep(0.004)
+        finally:
+            self.spec.close()
+            self.hypr.restore()
+            log.info("shutting down")
+        return 0
+
+    def tick_state(self, now: float) -> None:
+        cfg = self.config["border"]
+        active = (
+            self.playing
+            if self.playing_known
+            else now - self.dyn.last_sound < cfg["idle_after"]
+        )
+        if active:
+            self.dyn.last_sound = now
+            if self.state != "live":
+                log.info("music detected, borders live")
+            self.state = "live"
+            self.fade = 1.0
+            return
+        if self.state == "live":
+            self.state = "fading"
+            self.fade_start = now
+        if self.state == "fading":
+            span = max(0.05, cfg["fade_ms"] / 1000.0)
+            self.fade = max(0.0, 1.0 - (now - self.fade_start) / span)
+            if self.fade <= 0.0:
+                self.state = "idle"
+                self.hypr.restore()
+
+    def push_border(self) -> None:
+        if not self.config["border"]["enabled"] or self.state == "idle":
+            return
+        first, second, alpha = self.dyn.colours(self.palette, self.fade)
+        if self.config["border"].get("mode", "all") == "bottom":
+            base = self.config["border"]["angle"]
+            angle = base + (
+                (self.dyn.angle - base + 180) % 360 - 180
+            ) * self.fade
+        else:
+            angle = self.dyn.angle
+        # Fade alpha back to opaque so the final restore never pops.
+        alpha = int(alpha + (255 - alpha) * (1.0 - self.fade))
+        self.hypr.border(first, second, angle % 360.0, alpha)
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "env=%.2f bass=%.2f pulse=%.2f angle=%.0f fade=%.2f",
+                self.dyn.env,
+                self.dyn.bass,
+                self.dyn.pulse,
+                angle,
+                self.fade,
+            )
+
+
+def main(argv: list[str]) -> int:
+    debug = "--debug" in argv or "-d" in argv
+    config_path = DEFAULT_CONFIG_PATH
+    for index, arg in enumerate(argv):
+        if arg == "--config" and index + 1 < len(argv):
+            config_path = Path(argv[index + 1]).expanduser()
+
+    config = load_config(config_path)
+    level = logging.DEBUG if debug else getattr(
+        logging, str(config["debug"]["log_level"]).upper(), logging.INFO
+    )
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    return Daemon(config_path, debug=debug).run()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

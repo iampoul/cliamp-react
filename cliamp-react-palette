@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Theme hook: tell the running daemon to re-read the new theme palette.
+# Installed with: omarchy hook install theme-set ~/.local/bin/cliamp-react-palette
+systemctl --user kill -s USR1 cliamp-react.service 2>/dev/null || true

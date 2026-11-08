@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Small helper for the cliamp-react user service.
+set -euo pipefail
+case "${1:-status}" in
+  start)     systemctl --user start cliamp-react.service ;;
+  stop)      systemctl --user stop cliamp-react.service ;;
+  restart)   systemctl --user restart cliamp-react.service ;;
+  reload)    systemctl --user kill -s USR1 cliamp-react.service ;;
+  enable)    systemctl --user enable --now cliamp-react.service ;;
+  disable)   systemctl --user disable --now cliamp-react.service ;;
+  status)    systemctl --user status cliamp-react.service ;;
+  log)       journalctl --user -u cliamp-react.service -n 40 --no-pager ;;
+  *)         echo "usage: cliamp-react-ctl {start|stop|restart|reload|enable|disable|status|log}" >&2
+             exit 2 ;;
+esac
