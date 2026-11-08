@@ -8,9 +8,9 @@ STATE_FILE="$HOME/.config/cliamp-react/previous-bar-background"
 bar_on() {
   command -v omarchy >/dev/null || { echo "omarchy not found" >&2; exit 1; }
   omarchy plugin enable "$PLUGIN_ID" --section centerBegin
-  omarchy bar background glassy
+  omarchy bar background none
   omarchy restart shell
-  echo "bar visualizer on (background: glassy)"
+  echo "bar visualizer on (background: none)"
 }
 
 bar_off() {

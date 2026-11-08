@@ -65,8 +65,10 @@ if (( WITH_BAR )) && [[ -d "$HOME/.config/omarchy" ]]; then
 
   omarchy shell shell rescanPlugins
   omarchy plugin enable "$PLUGIN_ID" --section centerBegin
-  omarchy bar background glassy
-  echo "enabled bar plugin; bar background set to glassy (was $(cat "$BAR_STATE_FILE"))"
+  # Transparent bar: our Bottom-layer panel becomes the entire bar background,
+  # so the spectrum fills the whole strip behind every widget.
+  omarchy bar background none
+  echo "enabled bar plugin; bar background set to none (was $(cat "$BAR_STATE_FILE"))"
 
   if (( RESTART )); then
     omarchy restart shell

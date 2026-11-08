@@ -43,7 +43,15 @@ Item {
       // fades to zero and the bar is indistinguishable from a normal one.
       Rectangle {
         anchors.fill: parent
-        color: Commons.Color.background
+        color: Commons.Color.bar.background
+      }
+
+      // A permanent hairline so a transparent bar still has the theme's edge.
+      Rectangle {
+        anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+        height: 1
+        color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g,
+                       Commons.Color.accent.b, 0.08)
       }
 
       Canvas {
@@ -78,9 +86,9 @@ Item {
 
           // 1. A colour wash that breathes with loudness and kicks on beats.
           var wash = ctx.createLinearGradient(0, 0, w, 0)
-          wash.addColorStop(0, Qt.rgba(cool.r, cool.g, cool.b, 0.06 + 0.20 * energy))
-          wash.addColorStop(0.5, Qt.rgba(hot.r, hot.g, hot.b, 0.04 + 0.18 * beat))
-          wash.addColorStop(1, Qt.rgba(cool.r, cool.g, cool.b, 0.06 + 0.20 * energy))
+          wash.addColorStop(0, Qt.rgba(cool.r, cool.g, cool.b, 0.10 + 0.26 * energy))
+          wash.addColorStop(0.5, Qt.rgba(hot.r, hot.g, hot.b, 0.06 + 0.22 * beat))
+          wash.addColorStop(1, Qt.rgba(cool.r, cool.g, cool.b, 0.10 + 0.26 * energy))
           ctx.fillStyle = wash
           ctx.fillRect(0, 0, w, h)
 
@@ -88,10 +96,14 @@ Item {
           //    from the theme accent down to its red, like the window borders.
           var cols = Math.max(32, S.setting(root.cfg, "cols", Math.floor(w / 16)))
           var cw = w / cols
-          var maxH = h * 0.62
+          var maxH = h * 0.88
+          // Darker at the top, hottest along the bottom edge: the bar's text
+          // sits in the middle, so it stays readable while the strip still
+          // fills with colour from edge to edge.
           var grad = ctx.createLinearGradient(0, h - maxH, 0, h)
-          grad.addColorStop(0, Qt.rgba(cool.r, cool.g, cool.b, 0.35))
-          grad.addColorStop(1, Qt.rgba(hot.r, hot.g, hot.b, 0.55))
+          grad.addColorStop(0, Qt.rgba(cool.r, cool.g, cool.b, 0.18))
+          grad.addColorStop(0.45, Qt.rgba(cool.r, cool.g, cool.b, 0.40))
+          grad.addColorStop(1, Qt.rgba(hot.r, hot.g, hot.b, 0.72))
           ctx.fillStyle = grad
           ctx.beginPath()
           for (var i = 0; i < cols; i++) {
@@ -101,8 +113,17 @@ Item {
           }
           ctx.fill()
 
-          // 3. A faint horizon line to anchor the bar visually.
-          ctx.fillStyle = Qt.rgba(hot.r, hot.g, hot.b, 0.30)
+          // 3. A dark scrim keeps the bar's text legible over the brighter
+          //    spectrum. Raise `scrim` in [bar] for more contrast.
+          var scrim = S.clamp(S.setting(root.cfg, "scrim", 0.15), 0, 0.8)
+          if (scrim > 0) {
+            var base = Commons.Color.bar.background
+            ctx.fillStyle = Qt.rgba(base.r, base.g, base.b, scrim)
+            ctx.fillRect(0, 0, w, h)
+          }
+
+          // 4. A faint horizon line to anchor the bar visually.
+          ctx.fillStyle = Qt.rgba(hot.r, hot.g, hot.b, 0.35)
           ctx.fillRect(0, h - 1, w, 1)
         }
       }

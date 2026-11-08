@@ -18,9 +18,12 @@ BarWidget {
   readonly property real gain: S.setting(cfg, "gain", 1.0)
   readonly property string clickAction: S.setting(cfg, "click", "toggle")
   readonly property bool enabled: S.setting(cfg, "enabled", true) !== false
+  // The spectrum lives in the full-width bar background by default. Set
+  // `widget = true` in [bar] to also show this compact graph among the widgets.
+  readonly property bool widgetEnabled: S.setting(cfg, "widget", false) !== false
 
-  visible: root.enabled
-  implicitWidth: Math.max(60, S.setting(cfg, "width", 150))
+  visible: root.enabled && root.widgetEnabled
+  implicitWidth: root.widgetEnabled ? Math.max(60, S.setting(cfg, "width", 150)) : 0
   implicitHeight: barSize
 
   onFadeChanged: canvas.requestPaint()
@@ -61,7 +64,7 @@ BarWidget {
   Timer {
     interval: Math.max(16, Math.round(1000 / S.setting(root.cfg, "fps", 30)))
     repeat: true
-    running: root.enabled && !!root.service && root.fade > 0.01
+    running: root.enabled && root.widgetEnabled && !!root.service && root.fade > 0.01
     onTriggered: canvas.requestPaint()
   }
 

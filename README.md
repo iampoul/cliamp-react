@@ -3,10 +3,10 @@
 Music-reactive **window borders** and **Omarchy bar** for [Omarchy](https://omarchy.org/) + [cliamp](https://github.com/bjarneo/cliamp).
 
 When cliamp plays, the gradient borders of every tiled window come alive: colours pulse with the
-spectrum and the bright stop travels around all four edges. At the same time a compact spectrum
-appears in the Omarchy bar and a full-width gradient/spectrum washes across the bar's background.
-When the music stops, everything fades back to your theme's own colours. No audio capture, no new
-packages.
+spectrum and the bright stop travels around all four edges. At the same time a mirrored spectrum
+and colour gradient fill the **entire Omarchy bar behind every widget** — clock, tray, workspaces
+and all — because our panel becomes the bar's own background. When the music stops, everything
+fades back to your theme's own colours. No audio capture, no new packages.
 
 ```
 cliamp (TUI or --daemon)
@@ -16,8 +16,8 @@ cliamp (TUI or --daemon)
   │              └─ Hyprland IPC: eval hl.config({ ... active_border / inactive_border ... })
   └─ cliamp visstream --fps 30 (NDJSON)
        └─ io.github.iampoul.cliamp-react (Omarchy shell plugin, QML)
-            ├─ BarWidget.qml    — compact spectrum inside the bar
-            └─ BarBackground.qml — reactive backdrop behind the bar
+             ├─ BarWidget.qml     — optional compact spectrum widget (off by default)
+             └─ BarBackground.qml — full-width spectrum as the bar's background
 ```
 
 Both halves ship in this repo, share one `config.toml`, and work independently: stopping the
@@ -56,7 +56,8 @@ cd cliamp-react
 `install.sh` copies the scripts to `~/.local/bin`, the config to `~/.config/cliamp-react/config.toml`
 (only if you don't already have one), the systemd unit to `~/.config/systemd/user/`, installs the
 theme hook, and enables + starts the service. It also installs and enables the Omarchy bar plugin,
-sets the bar background to `glassy` so the reactive backdrop shows through, and restarts the
+sets the bar background to `none` so our panel becomes the entire bar background behind every
+widget, and restarts the
 Omarchy shell. The previous bar background is saved in
 `~/.config/cliamp-react/previous-bar-background` so it can be restored.
 
@@ -89,7 +90,7 @@ cp bar/* ~/.config/omarchy/plugins/$id/
 omarchy plugin validate ~/.config/omarchy/plugins/$id
 omarchy shell shell rescanPlugins
 omarchy plugin enable $id --section centerBegin
-omarchy bar background glassy
+omarchy bar background none
 omarchy restart shell
 ```
 
@@ -103,13 +104,15 @@ cliamp-react-ctl restart      # pick up border config changes
 cliamp-react-ctl reload       # re-read config + theme palette (SIGUSR1)
 cliamp-react-ctl log          # last 40 journal lines
 cliamp-react-ctl stop         # restores the theme border before exiting
-cliamp-react-ctl bar on       # enable the bar plugin + glassy background
+cliamp-react-ctl bar on       # enable the bar plugin + transparent bar
 cliamp-react-ctl bar off      # disable it and restore the previous bar look
 cliamp-react-ctl bar status   # plugin + background + service state
 ```
 
-Left-clicking the spectrum widget toggles cliamp play/pause. The bar half reads `config.toml`
-live — no restart needed after editing `[bar]`.
+The spectrum fills the whole bar behind the clock, tray, workspaces and every other widget; it is
+not a separate bar element. An optional compact widget can be enabled with `widget = true` (left-click
+it to toggle cliamp play/pause). The bar half reads `config.toml` live — no restart needed after editing
+`[bar]`. For a softer, frosted look, use `omarchy bar background glassy` instead of `none`.
 
 ## Configuration
 
@@ -129,20 +132,22 @@ are picked up automatically.
 | `border.idle_after` | `0.9` | Seconds after playback stops before the fade begins. |
 | `border.fade_ms` | `500` | Fade duration back to the theme border. |
 | `bar.enabled` | `true` | Master switch for the bar half. |
-| `bar.background` | `true` | Full-width reactive backdrop behind the bar. |
+| `bar.background` | `true` | Full-width reactive backdrop behind every bar widget. |
+| `bar.widget` | `false` | Also show a compact spectrum widget among the bar widgets. |
 | `bar.fps` | `24` | Widget repaint rate while playing (idle costs nothing). |
-| `bar.background_fps` | `12` | Backdrop repaint rate; it sits behind a blur, so 12 is plenty. |
+| `bar.background_fps` | `12` | Backdrop repaint rate (12 is plenty at this size). |
 | `bar.cols` | auto | Optional: override the number of columns in the backdrop. |
-| `bar.bars` | `24` | Bands drawn in the compact widget. |
+| `bar.bars` | `24` | Bands drawn in the compact widget (when `widget = true`). |
 | `bar.width` | `150` | Widget width in px. |
 | `bar.gain` | `1.0` | Spectrum amplitude multiplier (0.2–2.0). |
+| `bar.scrim` | `0.15` | Dark overlay over the spectrum (0–0.8) for text contrast. |
 | `bar.fade_ms` | `400` | Fade in/out on play and pause. |
 | `bar.click` | `"toggle"` | Left-click action: `"toggle"` / `"none"`. |
 | `debug.log_level` | `"info"` | `debug` / `info` / `warn` / `error`. |
 
 Try slower border motion: `spin = 0.08`. Prefer the under-window glow: `mode = "bottom"`.
-A stronger bar: `bar.gain = 1.5` or `omarchy bar background none` (our panel then becomes the
-entire bar background).
+A stronger bar: `bar.gain = 1.5`. A softer, frosted one: `omarchy bar background glassy`.
+Show the compact widget too: `bar.widget = true`.
 
 ## How it works
 
@@ -167,17 +172,18 @@ The bar half is an Omarchy shell plugin (`kinds: service, bar-widget`). Its serv
 once a second for exact play/pause state. Theme colours come from the shell's own
 `Commons.Color` singleton, so they follow `omarchy theme set`. The backdrop is a `PanelWindow` on
 the **Bottom** layer with `ExclusionMode.Ignore` and an empty input mask — no reserved space, no
-clicks stolen. It sits behind the bar, which is set to `glassy` so Omarchy's own blur turns the
-spectrum into an ambient wash. When paused the reactive canvas fades to zero over the theme's own
-bar colour, so the bar looks exactly as it did before.
+clicks stolen. The bar is set to `none` (transparent), so this panel *is* the bar's background:
+the spectrum fills the full width behind every widget. `glassy` is a softer frosted alternative.
+When paused the reactive canvas fades to zero over the theme's own bar colour, so the bar looks
+exactly as it did before.
 
 ## Limitations
 
 - Hyprland border colours are **global**: all windows share the gradient, and there is no
   per-edge control. `mode = "bottom"` approximates an underglow — the whole 2 px frame still
   carries the gradient.
-- The bar background needs `omarchy bar background glassy` (or `none`). With `opaque` the
-  backdrop is hidden; use `cliamp-react-ctl bar off` to restore the previous look.
+- The bar background needs `omarchy bar background none` (default) or `glassy`. With `opaque`
+  the backdrop is hidden; use `cliamp-react-ctl bar off` to restore the previous look.
 - The backdrop lives on the Bottom layer, so a floating window dragged into the bar strip would
   cover it. Tiled windows never do.
 - Requires cliamp to be running. While it is stopped the daemon sits idle at ~0 CPU and the bar
