@@ -1,0 +1,23 @@
+{
+  "title": "cliamp-react",
+  "toggle.label": "Reactive borders",
+  "toggle.description": "Paint cliamp's spectrum on every window border.",
+  "mode.label": "Motion path",
+  "mode.all": "All edges",
+  "mode.bottom": "Bottom edge",
+  "preset.label": "Motion",
+  "preset.calm": "Calm",
+  "preset.balanced": "Balanced",
+  "preset.wild": "Wild",
+  "details": "spin %1 · sweep %2° · alpha %3 · %4 fps",
+  "reset": "Reset",
+  "reset.tooltip": "Drop the overrides and return to config.toml",
+  "hint": "Changes apply live · Shift-click the bar icon to toggle · Middle-click cycles the path",
+  "status.loading": "Reading settings…",
+  "status.applying": "Applying…",
+  "status.stopped": "Service stopped — saved changes apply when it starts",
+  "status.off": "Borders are off",
+  "status.custom": "Custom values from overrides.toml",
+  "status.live.all": "Live · gradient travels around every window",
+  "status.live.bottom": "Live · glow stays on the bottom edge"
+}

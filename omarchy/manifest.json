@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.iampoul.cliamp-react",
+  "name": "cliamp-react",
+  "version": "0.1.0",
+  "author": "iampoul",
+  "license": "MIT",
+  "description": "Control cliamp-react's music-reactive window borders: on/off, motion path and motion presets.",
+  "homepage": "https://github.com/iampoul/cliamp-react",
+  "kinds": ["bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "cliamp-react",
+    "description": "Music-reactive border effect controls",
+    "category": "Utility",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

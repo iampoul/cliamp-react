@@ -1,6 +1,36 @@
 #!/usr/bin/env bash
-# Small helper for the cliamp-react user service.
+# Control the cliamp-react user service and its border settings.
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BINARY="$HERE/cliamp-react"
+if [[ ! -x "$BINARY" ]]; then
+  BINARY="$(command -v cliamp-react || true)"
+fi
+
+usage() {
+  cat >&2 <<'EOF'
+usage: cliamp-react-ctl <command> [args]
+
+service:
+  start | stop | restart | reload | enable | disable | status | log
+
+settings:
+  get                     print the effective settings as JSON
+  set <key> <value>       change one setting (enabled, mode, fps, spin, sweep, min_alpha)
+  preset <name>           apply a motion preset (calm, balanced, wild)
+  reset                   drop the overrides and return to config.toml
+EOF
+  exit 2
+}
+
+require_binary() {
+  if [[ -z "$BINARY" || ! -x "$BINARY" ]]; then
+    echo "cliamp-react-ctl: cliamp-react binary not found (looked next to $0 and on PATH)" >&2
+    exit 1
+  fi
+}
+
 case "${1:-status}" in
   start)     systemctl --user start cliamp-react.service ;;
   stop)      systemctl --user stop cliamp-react.service ;;
@@ -10,6 +40,15 @@ case "${1:-status}" in
   disable)   systemctl --user disable --now cliamp-react.service ;;
   status)    systemctl --user status cliamp-react.service ;;
   log)       journalctl --user -u cliamp-react.service -n 40 --no-pager ;;
-  *)         echo "usage: cliamp-react-ctl {start|stop|restart|reload|enable|disable|status|log}" >&2
-             exit 2 ;;
+
+  get)       require_binary; "$BINARY" settings get ;;
+  set)       require_binary
+             [[ $# -eq 3 ]] || usage
+             "$BINARY" settings set "$2" "$3" ;;
+  preset)    require_binary
+             [[ $# -eq 2 ]] || usage
+             "$BINARY" settings preset "$2" ;;
+  reset)     require_binary; "$BINARY" settings reset ;;
+
+  *)         usage ;;
 esac

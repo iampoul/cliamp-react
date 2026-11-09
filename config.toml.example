@@ -3,6 +3,11 @@
 #
 # Changes take effect on service restart:
 #   systemctl --user restart cliamp-react
+#
+# The Omarchy bar panel and `cliamp-react-ctl set|preset` do NOT touch this file.
+# They write overrides.toml next to it, layered on top:
+#   defaults <- config.toml <- overrides.toml
+# `cliamp-react-ctl reset` (or deleting overrides.toml) returns to this file.
 
 # cliamp must be running (TUI or --daemon) for its spectrum socket.
 [source]

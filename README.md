@@ -47,7 +47,9 @@ cd cliamp-react
 
 `install.sh` copies the scripts to `~/.local/bin`, the config to `~/.config/cliamp-react/config.toml`
 (only if you don't already have one), the systemd unit to `~/.config/systemd/user/`, installs the
-theme hook, and enables + starts the service.
+theme hook, enables + starts the service, and — on an Omarchy machine — installs the bar control
+plugin to `~/.config/omarchy/plugins/io.github.iampoul.cliamp-react/` and adds it to the right
+section of the bar.
 
 Manual install:
 
@@ -74,6 +76,37 @@ cliamp-react-ctl log        # last 40 journal lines
 cliamp-react-ctl stop       # restores the theme border before exiting
 ```
 
+### Bar control
+
+On Omarchy the installer adds a music-note pill to the bar's right section. The pill shows a small
+state dot: accent while the effect is live, dimmed when it is off, darker still while the service is
+stopped.
+
+- **Click** — open the control panel.
+- **Shift+click** — toggle the effect on/off.
+- **Middle-click** — cycle the motion path (`all` ↔ `bottom`).
+
+The panel has the master toggle, the motion path, the `Calm` / `Balanced` / `Wild` presets and a
+**Reset** that drops every override. Presets only touch the motion knobs and leave the mode alone:
+
+| Preset | `spin` | `sweep` | `min_alpha` | `fps` |
+| --- | --- | --- | --- | --- |
+| `Calm` | 0.08 | 15° | 150 | 15 |
+| `Balanced` | 0.20 | 30° | 200 | 20 |
+| `Wild` | 0.45 | 45° | 235 | 30 |
+
+Every change is applied live: the ctl writes `overrides.toml` and sends the daemon `SIGUSR1`, so no
+restart and no `config.toml` rewrite. The same actions are available from a shell:
+
+```sh
+cliamp-react-ctl get                    # effective settings as JSON
+cliamp-react-ctl set enabled false      # true/false
+cliamp-react-ctl set mode bottom        # all/bottom
+cliamp-react-ctl set spin 0.3           # fps 1-60, spin 0-2, sweep 0-90, min_alpha 0-255
+cliamp-react-ctl preset calm            # calm/balanced/wild
+cliamp-react-ctl reset                  # back to config.toml
+```
+
 ## Configuration
 
 `~/.config/cliamp-react/config.toml` (restart after editing):
@@ -94,6 +127,18 @@ cliamp-react-ctl stop       # restores the theme border before exiting
 
 Try slower motion: `spin = 0.08`. Prefer the under-window glow: `mode = "bottom"`.
 Bolder colours: raise `min_alpha` or edit `Palette` to use a different theme colour.
+
+### Overrides
+
+The bar panel and `cliamp-react-ctl` never rewrite `config.toml` — comments stay intact. They
+write `~/.config/cliamp-react/overrides.toml` instead, which is layered on top:
+
+```
+defaults ← config.toml ← overrides.toml
+```
+
+Delete `overrides.toml` (or press **Reset**) to fall back to `config.toml`. Overrides are read at
+startup and on every `SIGUSR1` / service restart, so they survive reboots and theme changes.
 
 ## How it works
 
@@ -144,5 +189,12 @@ rm ~/.local/bin/cliamp-react ~/.local/bin/cliamp-react-ctl ~/.local/bin/cliamp-r
 rm ~/.config/systemd/user/cliamp-react.service
 rm ~/.config/omarchy/hooks/theme-set.d/cliamp-react-palette
 rm -r ~/.config/cliamp-react
+```
+
+Then remove the bar pill:
+
+```sh
+omarchy plugin disable io.github.iampoul.cliamp-react
+rm -r ~/.config/omarchy/plugins/io.github.iampoul.cliamp-react
 hyprctl eval 'dofile(os.getenv("HOME") .. "/.local/state/omarchy/current/theme/hyprland.lua")'
 ```

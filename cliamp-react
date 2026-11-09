@@ -19,7 +19,9 @@ import math
 import os
 import signal
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from collections import deque
@@ -31,6 +33,7 @@ THEME_DIR = HOME / ".local/state/omarchy/current/theme"
 THEME_HYPRLAND = THEME_DIR / "hyprland.lua"
 THEME_COLORS = THEME_DIR / "colors.toml"
 DEFAULT_CONFIG_PATH = HOME / ".config/cliamp-react/config.toml"
+OVERRIDES_FILENAME = "overrides.toml"
 
 DEFAULTS = {
     "source": {"fps": 30},
@@ -48,7 +51,38 @@ DEFAULTS = {
     "debug": {"log_level": "info"},
 }
 
+# Exposed through `cliamp-react-ctl set`, written to overrides.toml.
+# key -> (toml section, toml field, value kind)
+SETTINGS = {
+    "enabled": ("border", "enabled", "bool"),
+    "mode": ("border", "mode", "mode"),
+    "fps": ("border", "fps", "int"),
+    "spin": ("border", "spin", "float"),
+    "sweep": ("border", "sweep", "float"),
+    "min_alpha": ("border", "min_alpha", "int"),
+}
+
+RANGES = {
+    "fps": (1, 60),
+    "spin": (0.0, 2.0),
+    "sweep": (0.0, 90.0),
+    "min_alpha": (0, 255),
+}
+
+# Motion presets: the four knobs that make the effect calmer or wilder.
+# Mode stays a separate setting.
+PRESETS = {
+    "calm": {"spin": 0.08, "sweep": 15.0, "min_alpha": 150, "fps": 15},
+    "balanced": {"spin": 0.20, "sweep": 30.0, "min_alpha": 200, "fps": 20},
+    "wild": {"spin": 0.45, "sweep": 45.0, "min_alpha": 235, "fps": 30},
+}
+PRESET_KEYS = ("spin", "sweep", "min_alpha", "fps")
+
 log = logging.getLogger("cliamp-react")
+
+
+class SettingError(ValueError):
+    """A bad setting name or value passed to the settings CLI."""
 
 
 def deep_merge(base: dict, extra: dict) -> dict:
@@ -61,17 +95,246 @@ def deep_merge(base: dict, extra: dict) -> dict:
     return out
 
 
-def load_config(path: Path) -> dict:
+def read_toml(path: Path, *, label: str, warn_missing: bool = False) -> dict:
     try:
         with path.open("rb") as handle:
-            user = tomllib.load(handle)
+            return tomllib.load(handle)
     except FileNotFoundError:
-        log.warning("config %s missing, using defaults", path)
-        user = {}
+        if warn_missing:
+            log.warning("%s %s missing, using defaults", label, path)
+        return {}
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        log.error("config %s unreadable (%s), using defaults", path, exc)
-        user = {}
-    return deep_merge(DEFAULTS, user)
+        log.error("%s %s unreadable (%s), ignoring it", label, path, exc)
+        return {}
+
+
+def overrides_path(config_path: Path) -> Path:
+    """Overrides live next to the active config file."""
+    return config_path.with_name(OVERRIDES_FILENAME)
+
+
+def load_config(path: Path) -> dict:
+    user = read_toml(path, label="config", warn_missing=True)
+    overrides = read_toml(overrides_path(path), label="overrides")
+    return deep_merge(deep_merge(DEFAULTS, user), overrides)
+
+
+# --- settings CLI ---------------------------------------------------------
+
+
+def coerce_setting(key: str, raw: str):
+    if key not in SETTINGS:
+        allowed = ", ".join(sorted(SETTINGS))
+        raise SettingError(f"unknown setting '{key}' (expected one of: {allowed})")
+    _section, _field, kind = SETTINGS[key]
+    text = str(raw).strip()
+
+    if kind == "bool":
+        lowered = text.lower()
+        if lowered in ("1", "true", "on", "yes"):
+            return True
+        if lowered in ("0", "false", "off", "no"):
+            return False
+        raise SettingError(f"enabled expects true/false, got '{raw}'")
+
+    if kind == "mode":
+        lowered = text.lower()
+        if lowered not in ("all", "bottom"):
+            raise SettingError(f"mode expects 'all' or 'bottom', got '{raw}'")
+        return lowered
+
+    if kind == "int":
+        try:
+            value = int(text)
+        except ValueError:
+            raise SettingError(f"{key} expects an integer, got '{raw}'") from None
+    else:
+        try:
+            value = float(text)
+        except ValueError:
+            raise SettingError(f"{key} expects a number, got '{raw}'") from None
+
+    low, high = RANGES[key]
+    if not low <= value <= high:
+        raise SettingError(f"{key} must be between {low:g} and {high:g}, got '{raw}'")
+    return value
+
+
+def toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, str):
+        return json.dumps(value)  # TOML basic string
+    raise SettingError(f"cannot write {type(value).__name__} to overrides.toml")
+
+
+def dump_overrides(data: dict) -> str:
+    """Serialize the flat section/scalar shape overrides.toml uses."""
+    lines = ["# Managed by cliamp-react-ctl; overrides config.toml. Delete a line to inherit."]
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            lines.append(f"{key} = {toml_value(value)}")
+    for section, values in data.items():
+        if not isinstance(values, dict):
+            continue
+        lines.append("")
+        lines.append(f"[{section}]")
+        for key, value in values.items():
+            if isinstance(value, dict):
+                continue
+            lines.append(f"{key} = {toml_value(value)}")
+    return "\n".join(lines) + "\n"
+
+
+def write_overrides(path: Path, data: dict) -> None:
+    text = dump_overrides(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_path = tempfile.mkstemp(prefix=".overrides.", dir=str(path.parent))
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.chmod(temp_path, 0o644)
+        os.replace(temp_path, path)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _systemctl(*args: str) -> subprocess.CompletedProcess | None:
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", str(RUNTIME_DIR))
+    try:
+        return subprocess.run(
+            ["systemctl", "--user", *args],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def service_active() -> bool | None:
+    result = _systemctl("is-active", "cliamp-react.service")
+    if result is None:
+        return None
+    return result.stdout.strip() == "active"
+
+
+def signal_daemon() -> bool:
+    """Ask the running service to re-read config + overrides. Inactive is fine."""
+    result = _systemctl("kill", "-s", "USR1", "cliamp-react.service")
+    return result is not None and result.returncode == 0
+
+
+def detect_preset(config: dict, raw_overrides: dict) -> str:
+    border = config["border"]
+    overridden = raw_overrides.get("border") or {}
+    if not any(key in overridden for key in PRESET_KEYS):
+        return "config"
+    for name, values in PRESETS.items():
+        if all(
+            abs(float(border[key]) - float(values[key])) < 1e-9
+            for key in PRESET_KEYS
+        ):
+            return name
+    return "custom"
+
+
+def settings_snapshot(config_path: Path) -> dict:
+    config = load_config(config_path)
+    raw_overrides = read_toml(overrides_path(config_path), label="overrides")
+    border = config["border"]
+    effective = {key: border[field] for key, (_section, field, _kind) in SETTINGS.items()}
+    effective.update(
+        {
+            "angle": border["angle"],
+            "idle_after": border["idle_after"],
+            "fade_ms": border["fade_ms"],
+            "source_fps": config["source"]["fps"],
+        }
+    )
+    active_overrides = {}
+    for key, (section, field, _kind) in SETTINGS.items():
+        if field in (raw_overrides.get(section) or {}):
+            active_overrides[key] = raw_overrides[section][field]
+    return {
+        "ok": True,
+        "paths": {
+            "config": str(config_path),
+            "overrides": str(overrides_path(config_path)),
+        },
+        "effective": effective,
+        "overrides": active_overrides,
+        "preset": detect_preset(config, raw_overrides),
+        "presets": PRESETS,
+        "service_active": service_active(),
+    }
+
+
+def settings_main(args: list[str], config_path: Path) -> int:
+    if not args:
+        print(
+            "usage: cliamp-react settings {get|set <key> <value>|preset <name>|reset}",
+            file=sys.stderr,
+        )
+        return 2
+    verb = args[0]
+    path = overrides_path(config_path)
+    try:
+        if verb == "get":
+            snapshot = settings_snapshot(config_path)
+        elif verb == "set":
+            if len(args) != 3:
+                raise SettingError("usage: cliamp-react settings set <key> <value>")
+            key, raw = args[1], args[2]
+            value = coerce_setting(key, raw)
+            section, field, _kind = SETTINGS[key]
+            data = read_toml(path, label="overrides")
+            data.setdefault(section, {})[field] = value
+            write_overrides(path, data)
+            signal_daemon()
+            snapshot = settings_snapshot(config_path)
+        elif verb == "preset":
+            if len(args) != 2:
+                raise SettingError(
+                    "usage: cliamp-react settings preset " + "|".join(PRESETS)
+                )
+            name = args[1].strip().lower()
+            if name not in PRESETS:
+                raise SettingError(
+                    f"unknown preset '{args[1]}' (expected: {', '.join(PRESETS)})"
+                )
+            data = read_toml(path, label="overrides")
+            data.setdefault("border", {}).update(PRESETS[name])
+            write_overrides(path, data)
+            signal_daemon()
+            snapshot = settings_snapshot(config_path)
+        elif verb == "reset":
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            signal_daemon()
+            snapshot = settings_snapshot(config_path)
+        else:
+            raise SettingError(f"unknown settings command '{verb}'")
+    except SettingError as exc:
+        print(f"cliamp-react: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"cliamp-react: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(snapshot, indent=2))
+    return 0
 
 
 # --- colour helpers -------------------------------------------------------
@@ -448,6 +711,12 @@ class Daemon:
         self.border_interval = 1.0 / max(
             1, min(60, int(self.config["border"]["fps"]))
         )
+        if not self.config["border"]["enabled"]:
+            # Turning the effect off must put the theme's own border back now,
+            # not leave the last gradient frame on screen.
+            self.state = "idle"
+            self.fade = 0.0
+            self.hypr.restore()
 
     def run(self) -> int:
         signal.signal(signal.SIGTERM, self.stop)
@@ -546,12 +815,29 @@ class Daemon:
             )
 
 
-def main(argv: list[str]) -> int:
-    debug = "--debug" in argv or "-d" in argv
+def parse_args(argv: list[str]) -> tuple[bool, Path, list[str]]:
+    debug = False
     config_path = DEFAULT_CONFIG_PATH
-    for index, arg in enumerate(argv):
-        if arg == "--config" and index + 1 < len(argv):
+    rest: list[str] = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg in ("--debug", "-d"):
+            debug = True
+            index += 1
+        elif arg == "--config" and index + 1 < len(argv):
             config_path = Path(argv[index + 1]).expanduser()
+            index += 2
+        else:
+            rest.append(arg)
+            index += 1
+    return debug, config_path, rest
+
+
+def main(argv: list[str]) -> int:
+    debug, config_path, rest = parse_args(argv)
+    if rest[:1] == ["settings"]:
+        return settings_main(rest[1:], config_path)
 
     config = load_config(config_path)
     level = logging.DEBUG if debug else getattr(
